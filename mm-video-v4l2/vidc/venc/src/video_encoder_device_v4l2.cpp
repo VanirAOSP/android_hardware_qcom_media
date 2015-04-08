@@ -349,11 +349,7 @@ void* venc_dev::async_venc_message_thread (void *input)
             while (!ioctl(pfd.fd, VIDIOC_DQBUF, &v4l2_buf)) {
                 venc_msg.msgcode=VEN_MSG_INPUT_BUFFER_DONE;
                 venc_msg.statuscode=VEN_S_SUCCESS;
-                if (omx_venc_base->mUseProxyColorFormat && !omx_venc_base->mUsesColorConversion)
-                    omxhdr = &omx_venc_base->meta_buffer_hdr[v4l2_buf.index];
-                else
-                    omxhdr = &omx_venc_base->m_inp_mem_ptr[v4l2_buf.index];
-
+                omxhdr=omx_venc_base->m_inp_mem_ptr+v4l2_buf.index;
                 venc_msg.buf.clientdata=(void*)omxhdr;
                 omx->handle->ebd++;
 
@@ -1104,14 +1100,6 @@ bool venc_dev::venc_get_buf_req(unsigned long *min_buff_count,
             bufreq.count = *actual_buff_count;
         else
             bufreq.count = 2;
-
-        // Increase buffer-header count for metadata-mode on input port
-        // to improve buffering and reduce bottlenecks in clients
-        if (metadatamode && (bufreq.count < 9)) {
-            DEBUG_PRINT_LOW("FW returned buffer count = %d , overwriting with 16",
-                bufreq.count);
-            bufreq.count = 9;
-        }
 
         bufreq.type=V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
         ret = ioctl(m_nDriver_fd,VIDIOC_REQBUFS, &bufreq);
@@ -2430,20 +2418,13 @@ bool venc_dev::venc_empty_buf(void *buffer, void *pmem_data_buf, unsigned index,
         // CPU (Eg: MediaCodec)  0            --             0              bufhdr
         // ---------------------------------------------------------------------------------------
         if (metadatamode) {
-            plane.m.userptr = index;
             meta_buf = (encoder_media_buffer_type *)bufhdr->pBuffer;
 
-            if (!meta_buf) {
-                //empty EOS buffer
-                if (!bufhdr->nFilledLen && (bufhdr->nFlags & OMX_BUFFERFLAG_EOS)) {
-                    plane.data_offset = bufhdr->nOffset;
-                    plane.length = bufhdr->nAllocLen;
-                    plane.bytesused = bufhdr->nFilledLen;
-                    DEBUG_PRINT_LOW("venc_empty_buf: empty EOS buffer");
-                } else {
-                    return false;
-                }
-            } else if (!color_format) {
+            if (!meta_buf)
+                return false;
+
+            if (!color_format) {
+                plane.m.userptr = index;
                 if (meta_buf->buffer_type == kMetadataBufferTypeCameraSource) {
                     plane.data_offset = meta_buf->meta_handle->data[1];
                     plane.length = meta_buf->meta_handle->data[2];
@@ -2456,17 +2437,19 @@ bool venc_dev::venc_empty_buf(void *buffer, void *pmem_data_buf, unsigned index,
                     plane.data_offset = 0;
                     plane.length = handle->size;
                     plane.bytesused = handle->size;
-                        DEBUG_PRINT_LOW("venc_empty_buf: Opaque camera buf: fd = %d "
-                                ": filled %d of %d", fd, plane.bytesused, plane.length);
+                    DEBUG_PRINT_LOW("venc_empty_buf: Opaque camera buf: fd = %d filled %d of %d",
+                            fd, plane.bytesused, plane.length);
                 }
             } else {
+                plane.m.userptr = (unsigned long) bufhdr->pBuffer;
                 plane.data_offset = bufhdr->nOffset;
                 plane.length = bufhdr->nAllocLen;
                 plane.bytesused = bufhdr->nFilledLen;
-                DEBUG_PRINT_LOW("venc_empty_buf: Opaque non-camera buf: fd = %d "
-                        ": filled %d of %d", fd, plane.bytesused, plane.length);
+                DEBUG_PRINT_LOW("venc_empty_buf: Opaque non-camera buf: fd = %d filled %d of %d",
+                        fd, plane.bytesused, plane.length);
             }
         } else {
+            plane.m.userptr = (unsigned long) bufhdr->pBuffer;
             plane.data_offset = bufhdr->nOffset;
             plane.length = bufhdr->nAllocLen;
             plane.bytesused = bufhdr->nFilledLen;
